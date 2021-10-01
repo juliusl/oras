@@ -74,7 +74,7 @@ Example - Push file to the HTTP registry:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.targetRef = args[0]
 			opts.fileRefs = args[1:]
-			return runPush(opts)
+			return runPush(&opts)
 		},
 	}
 
@@ -95,7 +95,7 @@ Example - Push file to the HTTP registry:
 	return cmd
 }
 
-func runPush(opts pushOptions) error {
+func runPush(opts *pushOptions) error {
 	ctx := context.Background()
 	if opts.debug {
 		logrus.SetLevel(logrus.DebugLevel)
@@ -162,7 +162,7 @@ func runPush(opts pushOptions) error {
 	if opts.pathValidationDisabled {
 		pushOpts = append(pushOpts, oras.WithNameValidation(nil))
 	}
-	files, err := loadFiles(store, annotations, &opts)
+	files, err := loadFiles(store, annotations, opts)
 	if err != nil {
 		return err
 	}

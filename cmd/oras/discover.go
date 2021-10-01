@@ -33,6 +33,8 @@ type discoverOptions struct {
 	password  string
 	insecure  bool
 	plainHTTP bool
+
+	refs *[]artifactspec.Descriptor
 }
 
 func discoverCmd() *cobra.Command {
@@ -48,7 +50,7 @@ Example - Discover artifacts of type "" linked with the specified reference:
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.targetRef = args[0]
-			return runDiscover(opts)
+			return runDiscover(&opts)
 		},
 	}
 
@@ -65,7 +67,7 @@ Example - Discover artifacts of type "" linked with the specified reference:
 	return cmd
 }
 
-func runDiscover(opts discoverOptions) error {
+func runDiscover(opts *discoverOptions) error {
 	ctx := context.Background()
 	if opts.debug {
 		logrus.SetLevel(logrus.DebugLevel)
@@ -85,6 +87,8 @@ func runDiscover(opts discoverOptions) error {
 	if err != nil {
 		return err
 	}
+
+	opts.refs = refs
 
 	switch opts.outputType {
 	case "tree":
