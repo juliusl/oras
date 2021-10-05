@@ -15,10 +15,23 @@ import (
 )
 
 type copyOptions struct {
-	from         pullOptions
-	fromDiscover discoverOptions
-	to           pushOptions
-	rescursive   bool
+	from                   pullOptions
+	fromDiscover           discoverOptions
+	to                     pushOptions
+	rescursive             bool
+	keep                   bool
+	matchAnnotationInclude []string
+	matchAnnotationExclude []string
+}
+
+type copyRecursiveOptions struct {
+	artifactType    string
+	filter          func(artifactspec.Descriptor) bool
+	additionalFiles []struct {
+		name         string
+		artifactType string
+		mediaType    string
+	}
 }
 
 func copyCmd() *cobra.Command {
@@ -26,9 +39,31 @@ func copyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "copy <from-ref> <to-ref>",
 		Aliases: []string{"cp"},
-		Short:   "Copy files from ref to ref",
-		Long:    `Copy artifacts from one reference to another reference`,
-		Args:    cobra.MinimumNArgs(2),
+		Short: "	Copy files from ref to ref",
+		Long: `Copy artifacts from one reference to another reference
+	# Examples 
+
+	## Copy image only 
+	oras cp localhost:5000/net-monitor:v1 localhost:5000/net-monitor-copy:v1
+
+	## Copy image and artifacts
+	oras cp localhost:5000/net-monitor:v1 localhost:5000/net-monitor-copy:v1 -r
+
+	# Advanced Examples - Copying with annotation filters 
+
+	## Copy image and artifacts with match include filter
+	oras cp localhost:5000/net-monitor:v1 localhost:5000/net-monitor-copy:v1 -r -m annotation.name /test/
+
+	## Copy image and artifacts with match exclude filter
+	oras cp localhost:5000/net-monitor:v1 localhost:5000/net-monitor-copy:v1 -r -x annotation.name /test/
+
+	## Copy image with both filters
+	oras cp localhost:5000/net-monitor:v1 localhost:5000/net-monitor-copy:v1 -r -m annotation.name /test/ -x other.annotation.name /test/
+
+	## Copy image with multiple match expressions 
+	oras cp localhost:5000/net-monitor:v1 localhost:5000/net-monitor-copy:v1 -r -m annotation.name /test/ -m other.annotation.name /test/
+		`,
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.from.targetRef = args[0]
 			opts.to.targetRef = args[1]
@@ -76,6 +111,9 @@ func copyCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.to.dryRun, "to-dry-run", false, "push to a dummy registry instead of the actual remote registry")
 
 	cmd.Flags().BoolVarP(&opts.rescursive, "recursive", "r", false, "recursively copy artifacts that reference the artifact being copied")
+	cmd.Flags().BoolVarP(&opts.keep, "keep", "k", false, "keep source files that were copied")
+	cmd.Flags().StringArrayVarP(&opts.matchAnnotationInclude, "match-annotation-include", "m", nil, "provide an annotation name and regular expression, matches will be included (only applicable with --recursive and -r)")
+	cmd.Flags().StringArrayVarP(&opts.matchAnnotationExclude, "match-annotation-exclude", "x", nil, "provide an annotation name and regular expression, matches will be excluded (only applicable with --recursive and -r)")
 
 	return cmd
 }
@@ -95,6 +133,10 @@ func runCopy(opts copyOptions) error {
 	if opts.rescursive {
 		recursiveOptions = &copyRecursiveOptions{
 			artifactType: opts.fromDiscover.artifactType,
+		}
+
+		if opts.matchAnnotationInclude != nil || opts.matchAnnotationExclude != nil {
+			recursiveOptions.filter = build_match_filter(opts.matchAnnotationInclude, opts.matchAnnotationExclude)
 		}
 	}
 
@@ -129,23 +171,68 @@ func runCopy(opts copyOptions) error {
 			if err != nil {
 				return err
 			}
+
+			sourceFiles = append(sourceFiles, toOpts.fileRefs...)
 		}
 	}
 
-	for _, f := range sourceFiles {
-		os.Remove(f)
+	if !opts.keep {
+		for _, f := range sourceFiles {
+			os.Remove(f)
+		}
 	}
 
 	return nil
 }
 
-type copyRecursiveOptions struct {
-	artifactType    string
-	filter          func(artifactspec.Descriptor) bool
-	additionalFiles []struct {
-		name         string
-		artifactType string
-		mediaType    string
+func build_match_filter(matchInclude []string, matchExclude []string) func(a artifactspec.Descriptor) bool {
+	var (
+		includes map[string]*regexp.Regexp = make(map[string]*regexp.Regexp)
+		excludes map[string]*regexp.Regexp = make(map[string]*regexp.Regexp)
+	)
+
+	for _, m := range matchInclude {
+		args := strings.Split(m, " ")
+		if len(args) > 0 {
+			annotationTitle := args[0]
+			annotationFilter := args[1]
+			includes[annotationTitle] = regexp.MustCompile(strings.Trim(annotationFilter, "/"))
+		}
+	}
+
+	for _, m := range matchExclude {
+		args := strings.Split(m, " ")
+		if len(args) > 0 {
+			annotationTitle := args[0]
+			annotationFilter := args[1]
+			excludes[annotationTitle] = regexp.MustCompile(strings.Trim(annotationFilter, "/"))
+		}
+	}
+
+	return func(a artifactspec.Descriptor) bool {
+		if a.Annotations == nil {
+			return len(includes) <= 0
+		}
+
+		result := true
+		for k, v := range a.Annotations {
+			matchFn, ok := includes[k]
+			if ok {
+				result = result && matchFn.MatchString(v)
+			}
+
+			matchFn, ok = excludes[k]
+			if ok {
+				result = result && !matchFn.MatchString(v)
+			}
+
+			// If it already should be filtered just return, otherwise continue to check all annotations
+			if !result {
+				return result
+			}
+		}
+
+		return result
 	}
 }
 
