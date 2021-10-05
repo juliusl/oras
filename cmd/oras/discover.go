@@ -34,7 +34,8 @@ type discoverOptions struct {
 	insecure  bool
 	plainHTTP bool
 
-	refs *[]artifactspec.Descriptor
+	outputRefs *[]artifactspec.Descriptor
+	outputDesc ocispec.Descriptor
 }
 
 func discoverCmd() *cobra.Command {
@@ -88,7 +89,8 @@ func runDiscover(opts *discoverOptions) error {
 		return err
 	}
 
-	opts.refs = refs
+	opts.outputRefs = refs
+	opts.outputDesc = desc
 
 	switch opts.outputType {
 	case "tree":

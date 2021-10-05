@@ -6,8 +6,11 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path"
 	"regexp"
+	"strings"
 
+	artifactspec "github.com/oras-project/artifacts-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -88,11 +91,70 @@ func runCopy(opts copyOptions) error {
 		return err
 	}
 
-	opts.from.output = ".working"
+	var recursiveOptions *copyRecursiveOptions
+	if opts.rescursive {
+		recursiveOptions = &copyRecursiveOptions{
+			artifactType: opts.fromDiscover.artifactType,
+		}
+	}
 
-	err = runPull(opts.from)
+	sourceFiles, err := copy_source(opts.from, recursiveOptions)
 	if err != nil {
 		return err
+	}
+
+	opts.to.fileRefs = sourceFiles
+
+	err = runPush(&opts.to)
+	if err != nil {
+		return err
+	}
+
+	if opts.rescursive {
+		subject := opts.to.targetRef
+
+		_, host, namespace, _, err := parse(opts.to.targetRef)
+		if err != nil {
+			return err
+		}
+
+		for _, r := range recursiveOptions.additionalFiles {
+			toOpts := &opts.to
+			toOpts.fileRefs = []string{fmt.Sprintf("%s:%s", r.name, strings.Replace(r.mediaType, "vnd.cncf.oras.artifact.manifest.v1+", "", -1))}
+			toOpts.targetRef = fmt.Sprintf("%s/%s", host, namespace)
+			toOpts.artifactType = r.artifactType
+			toOpts.artifactRefs = subject
+
+			err = runPush(toOpts)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, f := range sourceFiles {
+		os.Remove(f)
+	}
+
+	return nil
+}
+
+type copyRecursiveOptions struct {
+	artifactType    string
+	filter          func(artifactspec.Descriptor) bool
+	additionalFiles []struct {
+		name         string
+		artifactType string
+		mediaType    string
+	}
+}
+
+func copy_source(source pullOptions, recursiveOptions *copyRecursiveOptions) ([]string, error) {
+	source.output = ".working"
+
+	err := runPull(source)
+	if err != nil {
+		return nil, err
 	}
 
 	files, err := ioutil.ReadDir(".working")
@@ -103,55 +165,63 @@ func runCopy(opts copyOptions) error {
 	inputFiles := make([]string, len(files))
 
 	for i, f := range files {
+		// remove the existing file if it already exists in the current directory
+		finfo, _ := os.Stat(f.Name())
+		if finfo != nil {
+			os.Remove(f.Name())
+		}
+
+		os.Rename(path.Join(".working", f.Name()), f.Name())
 		inputFiles[i] = f.Name()
 	}
 
-	opts.to.fileRefs = inputFiles
-
-	err = runPush(&opts.to)
-	if err != nil {
-		return err
-	}
-
-	if opts.rescursive {
-		discOpts := &opts.fromDiscover
-		discOpts.targetRef = opts.from.targetRef
-		err := runDiscover(discOpts)
-		if err != nil {
-			return err
+	if recursiveOptions != nil {
+		discoverOpts := discoverOptions{
+			targetRef:    source.targetRef,
+			artifactType: recursiveOptions.artifactType,
 		}
 
-		_, _, namespace, _, err := parse(opts.from.targetRef)
+		runDiscover(&discoverOpts)
+
+		_, host, namespace, _, err := parse(source.targetRef)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		_, host, _, _, err := parse(opts.to.targetRef)
-		if err != nil {
-			return err
-		}
+		for _, a := range *discoverOpts.outputRefs {
+			match := func(artifactspec.Descriptor) bool {
+				return true
+			}
 
-		subject := opts.to.targetRef
+			if recursiveOptions.filter != nil {
+				match = recursiveOptions.filter
+			}
 
-		for _, r := range *discOpts.refs {
-			toOpts := &opts.to
+			if match(a) {
+				opts := pullOptions{
+					targetRef:          fmt.Sprintf("%s/%s@%s", host, namespace, a.Digest),
+					allowAllMediaTypes: true,
+				}
 
-			toOpts.targetRef = fmt.Sprintf("%s/%s@%s", host, namespace, r.Digest)
-			toOpts.artifactType = r.ArtifactType
-			toOpts.artifactRefs = subject
+				files, err := copy_source(opts, recursiveOptions)
+				if err != nil {
+					return nil, err
+				}
 
-			err = runPush(toOpts)
-			if err != nil {
-				return err
+				recursiveOptions.additionalFiles = append(recursiveOptions.additionalFiles, struct {
+					name         string
+					artifactType string
+					mediaType    string
+				}{
+					name:         files[0],
+					artifactType: a.ArtifactType,
+					mediaType:    a.MediaType,
+				})
 			}
 		}
 	}
 
-	for _, f := range files {
-		os.Remove(f.Name())
-	}
-
-	return nil
+	return inputFiles, nil
 }
 
 var (
