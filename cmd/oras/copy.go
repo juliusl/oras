@@ -190,17 +190,21 @@ func copy_dest(host, namespace, name, mediatype string, artifactType, subject st
 		os.Remove(finfo.Name())
 	}
 
-	err := os.Rename(name, finfo.Name())
-	if err != nil {
-		return nil, err
-	}
+	if finfo != nil {
+		err := os.Rename(name, finfo.Name())
+		if err != nil {
+			return nil, err
+		}
 
-	filename := finfo.Name()
-	if mediatype != "" {
-		encoding := strings.Replace(mediatype, "vnd.cncf.oras.artifact.manifest.v1+", "", -1)
-		toOpts.fileRefs = []string{fmt.Sprintf("%s:%s", filename, encoding)}
+		filename := finfo.Name()
+		if mediatype != "" {
+			encoding := strings.Replace(mediatype, "vnd.cncf.oras.artifact.manifest.v1+", "", -1)
+			toOpts.fileRefs = []string{fmt.Sprintf("%s:%s", filename, encoding)}
+		} else {
+			toOpts.fileRefs = []string{filename}
+		}
 	} else {
-		toOpts.fileRefs = []string{filename}
+		toOpts.fileRefs = []string{}
 	}
 
 	if toOpts.targetRef == "" {
@@ -211,7 +215,7 @@ func copy_dest(host, namespace, name, mediatype string, artifactType, subject st
 		}
 	}
 
-	err = runPush(toOpts)
+	err := runPush(toOpts)
 	if err != nil {
 		return nil, err
 	}
