@@ -151,7 +151,12 @@ func runCopy(opts copyOptions) error {
 		return err
 	}
 
-	toclean, err := copy_dest(host, namespace, sourceFiles[0], "", "", "", &opts.to)
+	var sourceName string
+	if len(sourceFiles) > 0 {
+		sourceName = sourceFiles[0]
+	}
+
+	toclean, err := copy_dest(host, namespace, sourceName, "", "", "", &opts.to)
 	if err != nil {
 		return err
 	}
