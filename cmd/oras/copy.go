@@ -29,6 +29,7 @@ type copyRecursiveOptions struct {
 	filter          func(artifactspec.Descriptor) bool
 	additionalFiles []struct {
 		name         string
+		subject      string
 		artifactType string
 		mediaType    string
 	}
@@ -39,7 +40,7 @@ func copyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "copy <from-ref> <to-ref>",
 		Aliases: []string{"cp"},
-		Short: "	Copy files from ref to ref",
+		Short:   "Copy files from ref to ref",
 		Long: `Copy artifacts from one reference to another reference
 	# Examples 
 
@@ -140,49 +141,82 @@ func runCopy(opts copyOptions) error {
 		}
 	}
 
-	sourceFiles, err := copy_source(opts.from, recursiveOptions)
+	sourceFiles, err := copy_source(opts.from, opts.to.targetRef, recursiveOptions)
 	if err != nil {
 		return err
 	}
 
-	opts.to.fileRefs = sourceFiles
+	_, host, namespace, _, err := parse(opts.to.targetRef)
+	if err != nil {
+		return err
+	}
 
-	err = runPush(&opts.to)
+	toclean, err := copy_dest(host, namespace, sourceFiles[0], "", "", "", &opts.to)
 	if err != nil {
 		return err
 	}
 
 	if opts.rescursive {
-		subject := opts.to.targetRef
-
-		_, host, namespace, _, err := parse(opts.to.targetRef)
-		if err != nil {
-			return err
-		}
-
 		for _, r := range recursiveOptions.additionalFiles {
 			toOpts := &opts.to
-			toOpts.fileRefs = []string{fmt.Sprintf("%s:%s", r.name, strings.Replace(r.mediaType, "vnd.cncf.oras.artifact.manifest.v1+", "", -1))}
-			toOpts.targetRef = fmt.Sprintf("%s/%s", host, namespace)
-			toOpts.artifactType = r.artifactType
-			toOpts.artifactRefs = subject
+			toOpts.targetRef = ""
 
-			err = runPush(toOpts)
+			toadditionalClean, err := copy_dest(host, namespace, r.name, r.mediaType, r.artifactType, r.subject, toOpts)
 			if err != nil {
 				return err
 			}
 
-			sourceFiles = append(sourceFiles, toOpts.fileRefs...)
+			toclean = append(toclean, toadditionalClean...)
 		}
 	}
 
 	if !opts.keep {
-		for _, f := range sourceFiles {
-			os.Remove(f)
+		for _, f := range toclean {
+			if strings.Index(f, ":") > 0 {
+				os.Remove(f[:strings.Index(f, ":")])
+			} else {
+				os.Remove(f)
+			}
 		}
 	}
 
 	return nil
+}
+
+func copy_dest(host, namespace, name, mediatype string, artifactType, subject string, toOpts *pushOptions) ([]string, error) {
+	// remove the existing file if it already exists in the current directory
+	finfo, _ := os.Stat(name)
+	if finfo != nil {
+		os.Remove(finfo.Name())
+	}
+
+	err := os.Rename(name, finfo.Name())
+	if err != nil {
+		return nil, err
+	}
+
+	filename := finfo.Name()
+	if mediatype != "" {
+		encoding := strings.Replace(mediatype, "vnd.cncf.oras.artifact.manifest.v1+", "", -1)
+		toOpts.fileRefs = []string{fmt.Sprintf("%s:%s", filename, encoding)}
+	} else {
+		toOpts.fileRefs = []string{filename}
+	}
+
+	if toOpts.targetRef == "" {
+		toOpts.targetRef = fmt.Sprintf("%s/%s", host, namespace)
+		if artifactType != "" && subject != "" {
+			toOpts.artifactType = artifactType
+			toOpts.artifactRefs = subject
+		}
+	}
+
+	err = runPush(toOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	return toOpts.fileRefs, nil
 }
 
 func build_match_filter(matchInclude []string, matchExclude []string) func(a artifactspec.Descriptor) bool {
@@ -236,30 +270,30 @@ func build_match_filter(matchInclude []string, matchExclude []string) func(a art
 	}
 }
 
-func copy_source(source pullOptions, recursiveOptions *copyRecursiveOptions) ([]string, error) {
-	source.output = ".working"
+func copy_source(source pullOptions, destref string, recursiveOptions *copyRecursiveOptions) ([]string, error) {
+	if source.output == "" {
+		source.output = ".working"
+	}
 
 	err := runPull(source)
 	if err != nil {
 		return nil, err
 	}
 
-	files, err := ioutil.ReadDir(".working")
+	var inputFiles []string
+	err = os.MkdirAll(source.output, 0755)
+	if err != nil {
+		return nil, err
+	}
+
+	files, err := ioutil.ReadDir(source.output)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	inputFiles := make([]string, len(files))
-
+	inputFiles = make([]string, len(files))
 	for i, f := range files {
-		// remove the existing file if it already exists in the current directory
-		finfo, _ := os.Stat(f.Name())
-		if finfo != nil {
-			os.Remove(f.Name())
-		}
-
-		os.Rename(path.Join(".working", f.Name()), f.Name())
-		inputFiles[i] = f.Name()
+		inputFiles[i] = path.Join(source.output, f.Name())
 	}
 
 	if recursiveOptions != nil {
@@ -288,22 +322,35 @@ func copy_source(source pullOptions, recursiveOptions *copyRecursiveOptions) ([]
 				opts := pullOptions{
 					targetRef:          fmt.Sprintf("%s/%s@%s", host, namespace, a.Digest),
 					allowAllMediaTypes: true,
+					output:             fmt.Sprintf(".working/%s", strings.Replace(a.Digest.String(), ":", "-", -1)),
 				}
 
-				files, err := copy_source(opts, recursiveOptions)
+				_, _, destnamespace, _, err := parse(destref)
 				if err != nil {
 					return nil, err
 				}
 
 				recursiveOptions.additionalFiles = append(recursiveOptions.additionalFiles, struct {
 					name         string
+					subject      string
 					artifactType string
 					mediaType    string
 				}{
-					name:         files[0],
+					subject:      destref,
 					artifactType: a.ArtifactType,
 					mediaType:    a.MediaType,
 				})
+
+				index := len(recursiveOptions.additionalFiles) - 1
+
+				files, err := copy_source(opts, fmt.Sprintf("%s/%s@%s", host, destnamespace, a.Digest), recursiveOptions)
+				if err != nil {
+					return nil, err
+				}
+
+				if len(files) > 0 {
+					recursiveOptions.additionalFiles[index].name = files[0]
+				}
 			}
 		}
 	}
