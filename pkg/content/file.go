@@ -38,7 +38,6 @@ type FileStore struct {
 	pathMap      *sync.Map
 	tmpFiles     *sync.Map
 	ignoreNoName bool
-	handleNoName bool
 }
 
 // NewFileStore creats a new file store
@@ -203,7 +202,7 @@ func validate(reference string) (string, string, string, error) {
 	return host, namespace, ref, nil
 }
 
-func WithNoNameHandler() content.WriterOpt {
+func WithNoNameHandler(handleNoName func(ref string, desc ocispec.Descriptor) error) content.WriterOpt {
 	return func(opts *content.WriterOpts) error {
 		if opts.Desc.Annotations == nil {
 			opts.Desc.Annotations = make(map[string]string)
@@ -252,14 +251,6 @@ func (s *FileStore) Writer(ctx context.Context, opts ...content.WriterOpt) (cont
 	for _, opt := range opts {
 		if err := opt(&wOpts); err != nil {
 			return nil, err
-		}
-	}
-
-	// If there is an error just resume normal behavior
-	if s.handleNoName {
-		err := WithNoNameHandler()(&wOpts)
-		if err != nil {
-			return nil, ErrHandleNoName
 		}
 	}
 

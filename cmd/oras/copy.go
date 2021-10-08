@@ -1,16 +1,23 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"os"
-	"path"
 	"regexp"
 	"strings"
 
+	"github.com/containerd/containerd/reference"
+	"github.com/deislabs/oras/pkg/content"
+	ctxo "github.com/deislabs/oras/pkg/context"
+	"github.com/deislabs/oras/pkg/oras"
+	"github.com/deislabs/oras/pkg/remotes/docker"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	artifactspec "github.com/oras-project/artifacts-spec/specs-go/v1"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -24,15 +31,21 @@ type copyOptions struct {
 	matchAnnotationExclude []string
 }
 
+type copyObject struct {
+	digest       digest.Digest
+	name         string
+	subject      string
+	artifactType string
+	mediaType    string
+	size         int64
+	annotations  map[string]string
+}
+
 type copyRecursiveOptions struct {
-	artifactType    string
+	memoryStore     *content.Memorystore
+	additionalFiles []copyObject
 	filter          func(artifactspec.Descriptor) bool
-	additionalFiles []struct {
-		name         string
-		subject      string
-		artifactType string
-		mediaType    string
-	}
+	artifactType    string
 }
 
 func copyCmd() *cobra.Command {
@@ -120,6 +133,8 @@ func copyCmd() *cobra.Command {
 }
 
 func runCopy(opts copyOptions) error {
+	var tocopy []copyObject
+
 	err := os.RemoveAll(".working")
 	if err != nil {
 		return err
@@ -130,10 +145,13 @@ func runCopy(opts copyOptions) error {
 		return err
 	}
 
+	store := content.NewMemoryStore()
+
 	var recursiveOptions *copyRecursiveOptions
 	if opts.rescursive {
 		recursiveOptions = &copyRecursiveOptions{
 			artifactType: opts.fromDiscover.artifactType,
+			memoryStore:  store,
 		}
 
 		if opts.matchAnnotationInclude != nil || opts.matchAnnotationExclude != nil {
@@ -141,91 +159,104 @@ func runCopy(opts copyOptions) error {
 		}
 	}
 
-	sourceFiles, err := copy_source(opts.from, opts.to.targetRef, recursiveOptions)
+	desc, pulled, err := copy_source(opts.from, opts.to.targetRef, recursiveOptions)
 	if err != nil {
 		return err
 	}
 
-	_, host, namespace, _, err := parse(opts.to.targetRef)
-	if err != nil {
-		return err
-	}
+	initialCopyObject := copy_object_from_descriptor(desc, copyObject{})
+	tocopy = append(tocopy, initialCopyObject)
 
-	var sourceName string
-	if len(sourceFiles) > 0 {
-		sourceName = sourceFiles[0]
-	}
-
-	toclean, err := copy_dest(host, namespace, sourceName, "", "", "", &opts.to)
-	if err != nil {
-		return err
+	for _, p := range pulled {
+		tocopy = append(tocopy, copy_object_from_descriptor(p, initialCopyObject))
 	}
 
 	if opts.rescursive {
 		for _, r := range recursiveOptions.additionalFiles {
-			toOpts := &opts.to
-			toOpts.targetRef = ""
+			d, content, ok := recursiveOptions.memoryStore.Get(ocispec.Descriptor{
+				Size:        r.size,
+				Annotations: r.annotations,
+				MediaType:   r.mediaType,
+				Digest:      r.digest,
+			})
 
-			toadditionalClean, err := copy_dest(host, namespace, r.name, r.mediaType, r.artifactType, r.subject, toOpts)
-			if err != nil {
-				return err
+			if !ok {
+				continue
 			}
 
-			toclean = append(toclean, toadditionalClean...)
+			tocopy = append(tocopy, r)
+
+			switch d.MediaType {
+			case artifactspec.MediaTypeArtifactManifest:
+				m := &manifest_extended{}
+				err := json.Unmarshal(content, m)
+				if err != nil {
+					return err
+				}
+
+				for _, b := range m.Blobs {
+					var name string
+
+					if b.Annotations != nil {
+						name = b.Annotations[ocispec.AnnotationTitle]
+					}
+
+					tocopy = append(tocopy, copyObject{
+						digest:       b.Digest,
+						name:         name,
+						subject:      r.subject,
+						artifactType: r.artifactType,
+						mediaType:    b.MediaType,
+						size:         b.Size,
+						annotations:  b.Annotations,
+					})
+				}
+			}
 		}
 	}
 
-	if !opts.keep {
-		for _, f := range toclean {
-			if strings.Index(f, ":") > 0 {
-				os.Remove(f[:strings.Index(f, ":")])
-			} else {
-				os.Remove(f)
-			}
+	for _, c := range tocopy {
+		d, content, ok := recursiveOptions.memoryStore.Get(ocispec.Descriptor{
+			Size:        c.size,
+			Annotations: c.annotations,
+			MediaType:   c.mediaType,
+			Digest:      c.digest,
+		})
+
+		if ok {
+			fmt.Printf("%v\n%s\n", d, string(content))
 		}
 	}
+
+	// if !opts.keep {
+	// 	for _, f := range toclean {
+	// 		if strings.Index(f, ":") > 0 {
+	// 			os.Remove(f[:strings.Index(f, ":")])
+	// 		} else {
+	// 			os.Remove(f)
+	// 		}
+	// 	}
+	// }
 
 	return nil
 }
 
-func copy_dest(host, namespace, name, mediatype string, artifactType, subject string, toOpts *pushOptions) ([]string, error) {
-	// remove the existing file if it already exists in the current directory
-	finfo, _ := os.Stat(name)
-	if finfo != nil {
-		os.Remove(finfo.Name())
+func copy_object_from_descriptor(b ocispec.Descriptor, referrer copyObject) copyObject {
+	var name string
+
+	if b.Annotations != nil {
+		name = b.Annotations[ocispec.AnnotationTitle]
 	}
 
-	if finfo != nil {
-		err := os.Rename(name, finfo.Name())
-		if err != nil {
-			return nil, err
-		}
-
-		filename := finfo.Name()
-		if mediatype != "" {
-			encoding := strings.Replace(mediatype, "vnd.cncf.oras.artifact.manifest.v1+", "", -1)
-			toOpts.fileRefs = []string{fmt.Sprintf("%s:%s", filename, encoding)}
-		} else {
-			toOpts.fileRefs = []string{filename}
-		}
-	} else {
-		toOpts.fileRefs = []string{}
+	return copyObject{
+		digest:       b.Digest,
+		name:         name,
+		subject:      referrer.subject,
+		artifactType: referrer.artifactType,
+		mediaType:    b.MediaType,
+		size:         b.Size,
+		annotations:  b.Annotations,
 	}
-
-	if toOpts.targetRef == "" {
-		toOpts.targetRef = fmt.Sprintf("%s/%s", host, namespace)
-		if artifactType != "" && subject != "" {
-			toOpts.artifactType = artifactType
-			toOpts.artifactRefs = subject
-		}
-	}
-
-	err := runPush(toOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	return toOpts.fileRefs, nil
 }
 
 func build_match_filter(matchInclude []string, matchExclude []string) func(a artifactspec.Descriptor) bool {
@@ -279,30 +310,14 @@ func build_match_filter(matchInclude []string, matchExclude []string) func(a art
 	}
 }
 
-func copy_source(source pullOptions, destref string, recursiveOptions *copyRecursiveOptions) ([]string, error) {
+func copy_source(source pullOptions, destref string, recursiveOptions *copyRecursiveOptions) (ocispec.Descriptor, []ocispec.Descriptor, error) {
 	if source.output == "" {
 		source.output = ".working"
 	}
 
-	err := runPull(source)
+	desc, pulled, err := copy_pull(source, recursiveOptions.memoryStore)
 	if err != nil {
-		return nil, err
-	}
-
-	var inputFiles []string
-	err = os.MkdirAll(source.output, 0755)
-	if err != nil {
-		return nil, err
-	}
-
-	files, err := ioutil.ReadDir(source.output)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	inputFiles = make([]string, len(files))
-	for i, f := range files {
-		inputFiles[i] = path.Join(source.output, f.Name())
+		return ocispec.Descriptor{}, nil, err
 	}
 
 	if recursiveOptions != nil {
@@ -315,7 +330,7 @@ func copy_source(source pullOptions, destref string, recursiveOptions *copyRecur
 
 		_, host, namespace, _, err := parse(source.targetRef)
 		if err != nil {
-			return nil, err
+			return ocispec.Descriptor{}, nil, err
 		}
 
 		for _, a := range *discoverOpts.outputRefs {
@@ -331,40 +346,93 @@ func copy_source(source pullOptions, destref string, recursiveOptions *copyRecur
 				opts := pullOptions{
 					targetRef:          fmt.Sprintf("%s/%s@%s", host, namespace, a.Digest),
 					allowAllMediaTypes: true,
+					allowEmptyName:     true,
 					output:             fmt.Sprintf(".working/%s", strings.Replace(a.Digest.String(), ":", "-", -1)),
 				}
 
 				_, _, destnamespace, _, err := parse(destref)
 				if err != nil {
-					return nil, err
+					return ocispec.Descriptor{}, nil, err
 				}
 
+				name := a.Annotations[ocispec.AnnotationTitle]
+
 				recursiveOptions.additionalFiles = append(recursiveOptions.additionalFiles, struct {
+					digest       digest.Digest
 					name         string
 					subject      string
 					artifactType string
 					mediaType    string
+					size         int64
+					annotations  map[string]string
 				}{
+					digest:       a.Digest,
+					name:         name,
+					annotations:  a.Annotations,
+					size:         a.Size,
 					subject:      destref,
 					artifactType: a.ArtifactType,
 					mediaType:    a.MediaType,
 				})
 
-				index := len(recursiveOptions.additionalFiles) - 1
+				destRef := fmt.Sprintf("%s/%s@%s", host, destnamespace, a.Digest)
 
-				files, err := copy_source(opts, fmt.Sprintf("%s/%s@%s", host, destnamespace, a.Digest), recursiveOptions)
+				desc, pulled, err := copy_source(opts, destRef, recursiveOptions)
 				if err != nil {
-					return nil, err
+					return ocispec.Descriptor{}, nil, err
 				}
 
-				if len(files) > 0 {
-					recursiveOptions.additionalFiles[index].name = files[0]
-				}
+				fmt.Printf("Pulled %v, %v\n", desc, pulled)
 			}
 		}
 	}
 
-	return inputFiles, nil
+	fmt.Printf("Pulled %v, %v\n", desc, pulled)
+
+	return desc, pulled, nil
+}
+
+func copy_pull(opts pullOptions, store *content.Memorystore) (ocispec.Descriptor, []ocispec.Descriptor, error) {
+	ctx := context.Background()
+	if opts.debug {
+		logrus.SetLevel(logrus.DebugLevel)
+	} else if !opts.verbose {
+		ctx = ctxo.WithLoggerDiscarded(ctx)
+	}
+	if opts.allowAllMediaTypes {
+		opts.allowedMediaTypes = nil
+	} else if len(opts.allowedMediaTypes) == 0 {
+		opts.allowedMediaTypes = []string{content.DefaultBlobMediaType, content.DefaultBlobDirMediaType}
+	}
+
+	resolver, ropts := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
+
+	resolver, err := docker.WithDiscover(opts.targetRef, resolver, ropts)
+	if err != nil {
+		return ocispec.Descriptor{}, nil, err
+	}
+
+	pullOpts := []oras.PullOpt{
+		oras.WithAllowedMediaTypes(opts.allowedMediaTypes),
+		oras.WithPullStatusTrack(os.Stdout),
+	}
+
+	if opts.allowEmptyName {
+		pullOpts = append(pullOpts, oras.WithPullEmptyNameAllowed())
+	}
+
+	desc, artifacts, err := oras.Pull(ctx, resolver, opts.targetRef, store, pullOpts...)
+	if err != nil {
+		if err == reference.ErrObjectRequired {
+			return ocispec.Descriptor{}, nil, fmt.Errorf("image reference format is invalid. Please specify <name:tag|name@digest>")
+		}
+		return ocispec.Descriptor{}, nil, err
+	}
+	if len(artifacts) == 0 {
+		fmt.Println("Downloaded empty artifact")
+	}
+
+	return desc, artifacts, nil
 }
 
 var (
@@ -384,4 +452,22 @@ func parse(parsing string) (reference string, host string, namespace string, loc
 	}
 
 	return "", "", "", "", errors.New("could not parse reference")
+}
+
+type manifest_extended struct {
+	// MediaType is the media type of this descriptor, this isn't included in the artifactspec, but can appear
+	MediaType string `json:"mediaType,omitempty"`
+
+	// ArtifactType is the artifact type of the object this schema refers to.
+	ArtifactType string `json:"artifactType"`
+
+	// Blobs is a collection of blobs referenced by this manifest.
+	Blobs []ocispec.Descriptor `json:"blobs"`
+
+	// Subject is an optional reference to any existing manifest within the repository.
+	// When specified, the artifact is said to be dependent upon the referenced subject.
+	Subject ocispec.Descriptor `json:"subject"`
+
+	// Annotations contains arbitrary metadata for the artifact manifest.
+	Annotations map[string]string `json:"annotations,omitempty"`
 }

@@ -6,14 +6,14 @@ import (
 
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/images"
-	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	artifactspec "github.com/oras-project/artifacts-spec/specs-go/v1"
 )
 
 // AppendArtifactsHandler will append artifacts desc to descs
 func AppendArtifactsHandler(provider content.Provider) images.Handler {
-	return images.HandlerFunc(func(ctx context.Context, desc v1.Descriptor) ([]v1.Descriptor, error) {
-		descs := make([]v1.Descriptor, 0)
+	return images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+		descs := make([]ocispec.Descriptor, 0)
 
 		switch desc.MediaType {
 
@@ -23,25 +23,40 @@ func AppendArtifactsHandler(provider content.Provider) images.Handler {
 				return nil, err
 			}
 
-			artifact := &artifactspec.Manifest{}
+			artifact := &manifest_extended{}
 			if err := json.Unmarshal(p, artifact); err != nil {
 				return nil, err
 			}
 
-			appendDesc := func(artifacts ...artifactspec.Descriptor) {
-				for _, desc := range artifacts {
-					descs = append(descs, v1.Descriptor{
-						MediaType:   desc.MediaType,
-						Digest:      desc.Digest,
-						Size:        desc.Size,
-						URLs:        desc.URLs,
-						Annotations: desc.Annotations,
-					})
-				}
+			for _, desc := range artifact.Blobs {
+				descs = append(descs, ocispec.Descriptor{
+					MediaType:   desc.MediaType,
+					Digest:      desc.Digest,
+					Size:        desc.Size,
+					URLs:        desc.URLs,
+					Annotations: desc.Annotations,
+				})
 			}
-
-			appendDesc(artifact.Blobs...)
 		}
+
 		return descs, nil
 	})
+}
+
+type manifest_extended struct {
+	// MediaType is the media type of this descriptor, this isn't included in the artifactspec, but can appear
+	MediaType string `json:"mediaType,omitempty"`
+
+	// ArtifactType is the artifact type of the object this schema refers to.
+	ArtifactType string `json:"artifactType"`
+
+	// Blobs is a collection of blobs referenced by this manifest.
+	Blobs []ocispec.Descriptor `json:"blobs"`
+
+	// Subject is an optional reference to any existing manifest within the repository.
+	// When specified, the artifact is said to be dependent upon the referenced subject.
+	Subject ocispec.Descriptor `json:"subject"`
+
+	// Annotations contains arbitrary metadata for the artifact manifest.
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
