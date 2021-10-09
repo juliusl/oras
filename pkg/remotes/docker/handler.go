@@ -9,6 +9,7 @@ import (
 	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/remotes"
+	orasimages "github.com/deislabs/oras/pkg/images"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	artifactspec "github.com/oras-project/artifacts-spec/specs-go/v1"
 	"github.com/pkg/errors"
@@ -20,7 +21,6 @@ import (
 // Base handlers can be provided which will be called before any push specific
 // handlers.
 func PushContent(ctx context.Context, pusher remotes.Pusher, desc ocispec.Descriptor, store content.Store, limiter *semaphore.Weighted, platform platforms.MatchComparer, wrapper func(h images.Handler) images.Handler) error {
-
 	var m sync.Mutex
 	manifestStack := []ocispec.Descriptor{}
 
@@ -40,14 +40,10 @@ func PushContent(ctx context.Context, pusher remotes.Pusher, desc ocispec.Descri
 
 	pushHandler := remotes.PushHandler(pusher, store)
 
-	platformFilterhandler := images.FilterPlatforms(images.ChildrenHandler(store), platform)
-
-	annotateHandler := annotateDistributionSourceHandler(platformFilterhandler, store)
-
 	var handler images.Handler = images.Handlers(
-		annotateHandler,
 		filterHandler,
 		pushHandler,
+		orasimages.AppendArtifactsHandler(store),
 	)
 	if wrapper != nil {
 		handler = wrapper(handler)
@@ -76,47 +72,4 @@ func PushContent(ctx context.Context, pusher remotes.Pusher, desc ocispec.Descri
 	}
 
 	return nil
-}
-
-// annotateDistributionSourceHandler add distribution source label into
-// annotation of config or blob descriptor.
-func annotateDistributionSourceHandler(f images.HandlerFunc, manager content.Manager) images.HandlerFunc {
-	return func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
-		children, err := f(ctx, desc)
-		if err != nil {
-			return nil, err
-		}
-
-		// only add distribution source for the config or blob data descriptor
-		switch desc.MediaType {
-		case images.MediaTypeDockerSchema2Manifest, ocispec.MediaTypeImageManifest,
-			images.MediaTypeDockerSchema2ManifestList, ocispec.MediaTypeImageIndex,
-			artifactspec.MediaTypeArtifactManifest:
-		default:
-			return children, nil
-		}
-
-		for i := range children {
-			child := children[i]
-
-			info, err := manager.Info(ctx, child.Digest)
-			if err != nil {
-				return nil, err
-			}
-
-			for k, v := range info.Labels {
-				if !strings.HasPrefix(k, "containerd.io/distribution.source.") {
-					continue
-				}
-
-				if child.Annotations == nil {
-					child.Annotations = map[string]string{}
-				}
-				child.Annotations[k] = v
-			}
-
-			children[i] = child
-		}
-		return children, nil
-	}
 }
