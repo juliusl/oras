@@ -90,7 +90,6 @@ func copyCmd() *cobra.Command {
 
 	cmd.Flags().StringArrayVar(&opts.from.allowedMediaTypes, "from-media-type", nil, "allowed media types to be pulled")
 	cmd.Flags().BoolVar(&opts.from.keepOldFiles, "from-keep-old-files", false, "do not replace existing files when pulling, treat them as errors")
-	cmd.Flags().StringVar(&opts.from.output, "from-output", "", "intermediate output directory of copying the source")
 	cmd.Flags().BoolVar(&opts.from.verbose, "from-verbose", false, "verbose output")
 	cmd.Flags().BoolVar(&opts.from.debug, "from-debug", false, "debug mode")
 	cmd.Flags().StringArrayVar(&opts.from.configs, "from-config", nil, "auth config path")
@@ -278,10 +277,6 @@ func copy_push(ctx context.Context, source content.Store, pusher remotes.Pusher,
 }
 
 func copy_source(opts pullOptions, destref string, ingester orascontent.ProvideIngester, recursiveOptions *copyRecursiveOptions) (ocispec.Descriptor, []ocispec.Descriptor, error) {
-	if opts.output == "" {
-		opts.output = ".working"
-	}
-
 	desc, pulled, err := copy_fetch(opts, ingester)
 	if err != nil {
 		return ocispec.Descriptor{}, nil, err
@@ -314,7 +309,6 @@ func copy_source(opts pullOptions, destref string, ingester orascontent.ProvideI
 					targetRef:          fmt.Sprintf("%s/%s@%s", host, namespace, a.Digest),
 					allowAllMediaTypes: true,
 					allowEmptyName:     true,
-					output:             fmt.Sprintf(".working/%s", strings.Replace(a.Digest.String(), ":", "-", -1)),
 				}
 
 				_, _, destnamespace, _, err := parse(destref)
