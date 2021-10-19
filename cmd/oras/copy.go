@@ -342,6 +342,13 @@ func copy_source(opts pullOptions, destref string, ingester orascontent.ProvideI
 					}
 
 					name := blob.Annotations[ocispec.AnnotationTitle]
+
+					// I've declared the struct this way in places where I construct the actual copyObject value
+					// This is so that if I update the type definition, the below code will not compile until it is updated
+					// This is useful to know from an maintainability aspect. If someone changes the type they will know each place it must be updated,
+					// This can help the contributor consider what types of members make sense to add.
+					// For example if I added a member to the underlying type, but I see that in the places I construct instances of underlying type,
+					// I have no access to the the desired value of the member, I might need to reconsider or plan for additional changes
 					recursiveOptions.additionalFiles = append(recursiveOptions.additionalFiles, struct {
 						manifest     *ocispec.Descriptor
 						digest       digest.Digest
