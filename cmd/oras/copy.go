@@ -11,16 +11,18 @@ import (
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/reference"
-	iresolver "github.com/deislabs/oras/internal/resolver"
-	orascontent "github.com/deislabs/oras/pkg/content"
-	ctxo "github.com/deislabs/oras/pkg/context"
+	"github.com/containerd/containerd/remotes"
 	"github.com/deislabs/oras/pkg/oras"
-	orasdocker "github.com/deislabs/oras/pkg/remotes/docker"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	artifactspec "github.com/oras-project/artifacts-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+
+	iresolver "github.com/deislabs/oras/internal/resolver"
+	orascontent "github.com/deislabs/oras/pkg/content"
+	ctxo "github.com/deislabs/oras/pkg/context"
+	orasdocker "github.com/deislabs/oras/pkg/remotes/docker"
 )
 
 type copyOptions struct {
@@ -245,44 +247,13 @@ func copy_dest(opts pushOptions, store content.Store, parent *ocispec.Descriptor
 			continue
 		}
 
-		w, err := pusher.Push(ctx, f)
-		if err != nil {
-
-			if errors.Is(err, errdefs.ErrAlreadyExists) {
-				continue
-			}
-			return err
-		}
-		defer w.Close()
-
-		r, err := store.ReaderAt(ctx, f)
-		if err != nil {
-			return err
-		}
-		defer r.Close()
-
-		err = content.Copy(ctx, w, content.NewReader(r), f.Size, f.Digest)
+		err := copy_push(ctx, store, pusher, f)
 		if err != nil {
 			return err
 		}
 	}
 
-	w, err := pusher.Push(ctx, *parent)
-	if err != nil {
-		if errors.Is(err, errdefs.ErrAlreadyExists) {
-			return nil
-		}
-		return err
-	}
-	defer w.Close()
-
-	r, err := store.ReaderAt(ctx, *parent)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	err = content.Copy(ctx, w, content.NewReader(r), parent.Size, parent.Digest)
+	err = copy_push(ctx, store, pusher, *parent)
 	if err != nil {
 		return err
 	}
@@ -295,76 +266,49 @@ func copy_dest(opts pushOptions, store content.Store, parent *ocispec.Descriptor
 	return nil
 }
 
-func build_match_filter(matchInclude []string, matchExclude []string) func(a artifactspec.Descriptor) bool {
-	var (
-		includes map[string]*regexp.Regexp = make(map[string]*regexp.Regexp)
-		excludes map[string]*regexp.Regexp = make(map[string]*regexp.Regexp)
-	)
-
-	for _, m := range matchInclude {
-		args := strings.Split(m, " ")
-		if len(args) > 0 {
-			annotationTitle := args[0]
-			annotationFilter := args[1]
-			includes[annotationTitle] = regexp.MustCompile(strings.Trim(annotationFilter, "/"))
+func copy_push(ctx context.Context, source content.Store, pusher remotes.Pusher, desc ocispec.Descriptor) error {
+	w, err := pusher.Push(ctx, desc)
+	if err != nil {
+		if errors.Is(err, errdefs.ErrAlreadyExists) {
+			return nil
 		}
+		return err
+	}
+	defer w.Close()
+
+	r, err := source.ReaderAt(ctx, desc)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	err = content.Copy(ctx, w, content.NewReader(r), desc.Size, desc.Digest)
+	if err != nil {
+		return err
 	}
 
-	for _, m := range matchExclude {
-		args := strings.Split(m, " ")
-		if len(args) > 0 {
-			annotationTitle := args[0]
-			annotationFilter := args[1]
-			excludes[annotationTitle] = regexp.MustCompile(strings.Trim(annotationFilter, "/"))
-		}
-	}
-
-	return func(a artifactspec.Descriptor) bool {
-		if a.Annotations == nil {
-			return len(includes) <= 0
-		}
-
-		result := true
-		for k, v := range a.Annotations {
-			matchFn, ok := includes[k]
-			if ok {
-				result = result && matchFn.MatchString(v)
-			}
-
-			matchFn, ok = excludes[k]
-			if ok {
-				result = result && !matchFn.MatchString(v)
-			}
-
-			// If it already should be filtered just return, otherwise continue to check all annotations
-			if !result {
-				return result
-			}
-		}
-
-		return result
-	}
+	return nil
 }
 
-func copy_source(source pullOptions, destref string, ingester orascontent.ProvideIngester, recursiveOptions *copyRecursiveOptions) (ocispec.Descriptor, []ocispec.Descriptor, error) {
-	if source.output == "" {
-		source.output = ".working"
+func copy_source(opts pullOptions, destref string, ingester orascontent.ProvideIngester, recursiveOptions *copyRecursiveOptions) (ocispec.Descriptor, []ocispec.Descriptor, error) {
+	if opts.output == "" {
+		opts.output = ".working"
 	}
 
-	desc, pulled, err := copy_fetch(source, ingester)
+	desc, pulled, err := copy_fetch(opts, ingester)
 	if err != nil {
 		return ocispec.Descriptor{}, nil, err
 	}
 
 	if recursiveOptions != nil {
 		discoverOpts := discoverOptions{
-			targetRef:    source.targetRef,
+			targetRef:    opts.targetRef,
 			artifactType: recursiveOptions.artifactType,
 		}
 
 		runDiscover(&discoverOpts)
 
-		_, host, namespace, _, err := parse(source.targetRef)
+		_, host, namespace, _, err := parse(opts.targetRef)
 		if err != nil {
 			return ocispec.Descriptor{}, nil, err
 		}
@@ -499,6 +443,57 @@ func copy_fetch(opts pullOptions, store orascontent.ProvideIngester) (ocispec.De
 var (
 	referenceRegex = regexp.MustCompile(`([.\w\d:-]+)\/{1,}?([a-z0-9]+(?:[/._-][a-z0-9]+)*(?:[a-z0-9]+(?:[/._-][a-z0-9]+)*)*)[:@]([a-zA-Z0-9_]+:?[a-zA-Z0-9._-]{0,127})`)
 )
+
+func build_match_filter(matchInclude []string, matchExclude []string) func(a artifactspec.Descriptor) bool {
+	var (
+		includes map[string]*regexp.Regexp = make(map[string]*regexp.Regexp)
+		excludes map[string]*regexp.Regexp = make(map[string]*regexp.Regexp)
+	)
+
+	for _, m := range matchInclude {
+		args := strings.Split(m, " ")
+		if len(args) > 0 {
+			annotationTitle := args[0]
+			annotationFilter := args[1]
+			includes[annotationTitle] = regexp.MustCompile(strings.Trim(annotationFilter, "/"))
+		}
+	}
+
+	for _, m := range matchExclude {
+		args := strings.Split(m, " ")
+		if len(args) > 0 {
+			annotationTitle := args[0]
+			annotationFilter := args[1]
+			excludes[annotationTitle] = regexp.MustCompile(strings.Trim(annotationFilter, "/"))
+		}
+	}
+
+	return func(a artifactspec.Descriptor) bool {
+		if a.Annotations == nil {
+			return len(includes) <= 0
+		}
+
+		result := true
+		for k, v := range a.Annotations {
+			matchFn, ok := includes[k]
+			if ok {
+				result = result && matchFn.MatchString(v)
+			}
+
+			matchFn, ok = excludes[k]
+			if ok {
+				result = result && !matchFn.MatchString(v)
+			}
+
+			// If it already should be filtered just return, otherwise continue to check all annotations
+			if !result {
+				return result
+			}
+		}
+
+		return result
+	}
+}
 
 func parse(parsing string) (reference string, host string, namespace string, locator string, err error) {
 	matches := referenceRegex.FindAllStringSubmatch(parsing, -1)
