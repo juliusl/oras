@@ -19,7 +19,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
-	iresolver "github.com/deislabs/oras/internal/resolver"
 	orascontent "github.com/deislabs/oras/pkg/content"
 	ctxo "github.com/deislabs/oras/pkg/context"
 	orasdocker "github.com/deislabs/oras/pkg/remotes/docker"
@@ -91,8 +90,7 @@ func copyCmd() *cobra.Command {
 
 	cmd.Flags().StringArrayVar(&opts.from.allowedMediaTypes, "from-media-type", nil, "allowed media types to be pulled")
 	cmd.Flags().BoolVar(&opts.from.keepOldFiles, "from-keep-old-files", false, "do not replace existing files when pulling, treat them as errors")
-	cmd.Flags().BoolVar(&opts.from.pathTraversal, "from-allow-path-traversal", false, "allow storing files out of the output directory")
-	cmd.Flags().StringVar(&opts.from.output, "from-output", "", "output directory")
+	cmd.Flags().StringVar(&opts.from.output, "from-output", "", "intermediate output directory of copying the source")
 	cmd.Flags().BoolVar(&opts.from.verbose, "from-verbose", false, "verbose output")
 	cmd.Flags().BoolVar(&opts.from.debug, "from-debug", false, "debug mode")
 	cmd.Flags().StringArrayVar(&opts.from.configs, "from-config", nil, "auth config path")
@@ -101,7 +99,7 @@ func copyCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.from.insecure, "from-insecure", false, "allow connections to SSL registry without certs")
 	cmd.Flags().BoolVar(&opts.from.plainHTTP, "from-plain-http", false, "use plain http and not https")
 
-	cmd.Flags().StringVarP(&opts.fromDiscover.artifactType, "artifact-type", "", "", "artifact type")
+	cmd.Flags().StringVarP(&opts.fromDiscover.artifactType, "artifact-type", "", "", "artifact type to copy from source")
 	cmd.Flags().StringVarP(&opts.fromDiscover.outputType, "output", "o", "table", fmt.Sprintf("Format in which to display references (%s, %s, or %s). tree format will show all references including nested", "table", "json", "tree"))
 	cmd.Flags().BoolVarP(&opts.fromDiscover.verbose, "verbose", "v", false, "verbose output")
 	cmd.Flags().BoolVarP(&opts.fromDiscover.debug, "debug", "d", false, "debug mode")
@@ -111,12 +109,6 @@ func copyCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&opts.fromDiscover.insecure, "insecure", "", false, "allow connections to SSL registry without certs")
 	cmd.Flags().BoolVarP(&opts.fromDiscover.plainHTTP, "plain-http", "", false, "use plain http and not https")
 
-	cmd.Flags().StringVar(&opts.to.manifestConfigRef, "to-manifest-config", "", "manifest config file")
-	cmd.Flags().StringVar(&opts.to.manifestAnnotations, "to-manifest-annotations", "", "manifest annotation file")
-	cmd.Flags().StringVar(&opts.to.manifestExport, "to-export-manifest", "", "export the pushed manifest")
-	cmd.Flags().StringVar(&opts.to.artifactType, "to-artifact-type", "", "artifact type")
-	cmd.Flags().StringVar(&opts.to.artifactRefs, "to-subject", "", "subject artifact")
-	cmd.Flags().BoolVar(&opts.to.pathValidationDisabled, "to-disable-path-validation", false, "skip path validation")
 	cmd.Flags().BoolVar(&opts.to.verbose, "to-verbose", false, "verbose output")
 	cmd.Flags().BoolVar(&opts.to.debug, "to-debug", false, "debug mode")
 	cmd.Flags().StringArrayVar(&opts.to.configs, "to-config", nil, "auth config path")
@@ -124,7 +116,6 @@ func copyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.to.password, "to-password", "", "registry password")
 	cmd.Flags().BoolVar(&opts.to.insecure, "to-insecure", false, "allow connections to SSL registry without certs")
 	cmd.Flags().BoolVar(&opts.to.plainHTTP, "to-plain-http", false, "use plain http and not https")
-	cmd.Flags().BoolVar(&opts.to.dryRun, "to-dry-run", false, "push to a dummy registry instead of the actual remote registry")
 
 	cmd.Flags().BoolVarP(&opts.rescursive, "recursive", "r", false, "recursively copy artifacts that reference the artifact being copied")
 	cmd.Flags().BoolVarP(&opts.keep, "keep", "k", false, "keep source files that were copied")
@@ -219,10 +210,6 @@ func copy_dest(opts pushOptions, store content.Store, parent *ocispec.Descriptor
 	}
 
 	resolver, ropts := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
-	if opts.dryRun {
-		resolver = iresolver.Dummy()
-		fmt.Println("Entered dry-run mode")
-	}
 	resolver, err := orasdocker.WithDiscover(opts.targetRef, resolver, orasdocker.NewOpts(ropts))
 	if err != nil {
 		return err
