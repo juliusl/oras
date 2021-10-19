@@ -99,7 +99,6 @@ func copyCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.from.plainHTTP, "from-plain-http", false, "use plain http and not https")
 
 	cmd.Flags().StringVarP(&opts.fromDiscover.artifactType, "artifact-type", "", "", "artifact type to copy from source")
-	cmd.Flags().StringVarP(&opts.fromDiscover.outputType, "output", "o", "table", fmt.Sprintf("Format in which to display references (%s, %s, or %s). tree format will show all references including nested", "table", "json", "tree"))
 	cmd.Flags().BoolVarP(&opts.fromDiscover.verbose, "verbose", "v", false, "verbose output")
 	cmd.Flags().BoolVarP(&opts.fromDiscover.debug, "debug", "d", false, "debug mode")
 	cmd.Flags().StringArrayVarP(&opts.fromDiscover.configs, "config", "c", nil, "auth config path")
@@ -295,15 +294,15 @@ func copy_source(opts pullOptions, destref string, ingester orascontent.ProvideI
 			return ocispec.Descriptor{}, nil, err
 		}
 
+		match := func(artifactspec.Descriptor) bool {
+			return true
+		}
+
+		if recursiveOptions.filter != nil {
+			match = recursiveOptions.filter
+		}
+
 		for _, a := range *discoverOpts.outputRefs {
-			match := func(artifactspec.Descriptor) bool {
-				return true
-			}
-
-			if recursiveOptions.filter != nil {
-				match = recursiveOptions.filter
-			}
-
 			if match(a) {
 				opts := pullOptions{
 					targetRef:          fmt.Sprintf("%s/%s@%s", host, namespace, a.Digest),
