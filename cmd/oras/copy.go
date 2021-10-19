@@ -88,8 +88,6 @@ func copyCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringArrayVar(&opts.from.allowedMediaTypes, "from-media-type", nil, "allowed media types to be pulled")
-	cmd.Flags().BoolVar(&opts.from.allowAllMediaTypes, "from-allow-all", false, "allow all media types to be pulled")
-	cmd.Flags().BoolVar(&opts.from.allowEmptyName, "from-allow-empty-name", false, "allow pulling files with empty name")
 	cmd.Flags().BoolVar(&opts.from.keepOldFiles, "from-keep-old-files", false, "do not replace existing files when pulling, treat them as errors")
 	cmd.Flags().BoolVar(&opts.from.pathTraversal, "from-allow-path-traversal", false, "allow storing files out of the output directory")
 	cmd.Flags().StringVar(&opts.from.output, "from-output", "", "output directory")
@@ -169,7 +167,7 @@ func runCopy(opts copyOptions) error {
 		return err
 	}
 
-	err = copy_dest(&opts.to, cached, &desc, pulled...)
+	err = copy_dest(opts.to, cached, &desc, pulled...)
 	if err != nil {
 		return err
 	}
@@ -181,7 +179,7 @@ func runCopy(opts copyOptions) error {
 		}
 
 		for _, r := range recursiveOptions.additionalFiles {
-			p := &pushOptions{
+			p := pushOptions{
 				targetRef:    fmt.Sprintf("%s/%s", host, namespace),
 				artifactType: r.artifactType,
 				artifactRefs: r.subject,
@@ -210,7 +208,7 @@ func runCopy(opts copyOptions) error {
 	return nil
 }
 
-func copy_dest(opts *pushOptions, store content.Store, parent *ocispec.Descriptor, files ...ocispec.Descriptor) error {
+func copy_dest(opts pushOptions, store content.Store, parent *ocispec.Descriptor, files ...ocispec.Descriptor) error {
 	ctx := context.Background()
 	if opts.debug {
 		logrus.SetLevel(logrus.DebugLevel)
