@@ -318,6 +318,10 @@ func copy_source(opts pullOptions, destref string, ingester orascontent.ProvideI
 
 				destRef := fmt.Sprintf("%s/%s@%s", host, destnamespace, a.Digest)
 
+				// In the next call to copy_source, I might end up adding additional files from my children
+				// In that case, I will need to ensure those additional files get added after the files that will be added here
+				// The below logic does this by first checking if that is the case, restoring state to what it was before the call
+				// and caching the additional files in another array. The code then proceeds normally, until the end when I concatenate the array back
 				before := len(recursiveOptions.additionalFiles)
 				p, blobs, err := copy_source(opts, destRef, ingester, recursiveOptions)
 				if err != nil {
