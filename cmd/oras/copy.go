@@ -45,7 +45,6 @@ type copyObject struct {
 }
 
 type copyRecursiveOptions struct {
-	store           orascontent.ProvideIngester
 	additionalFiles []copyObject
 	filter          func(artifactspec.Descriptor) bool
 	artifactType    string
@@ -155,7 +154,6 @@ func runCopy(opts copyOptions) error {
 	if opts.rescursive {
 		recursiveOptions = &copyRecursiveOptions{
 			artifactType: opts.fromDiscover.artifactType,
-			store:        cached,
 		}
 
 		if opts.matchAnnotationInclude != nil || opts.matchAnnotationExclude != nil {
@@ -166,7 +164,7 @@ func runCopy(opts copyOptions) error {
 	opts.from.allowAllMediaTypes = true
 	opts.from.allowEmptyName = true
 
-	desc, pulled, err := copy_source(opts.from, opts.to.targetRef, recursiveOptions)
+	desc, pulled, err := copy_source(opts.from, opts.to.targetRef, cached, recursiveOptions)
 	if err != nil {
 		return err
 	}
@@ -244,7 +242,8 @@ func copy_dest(opts *pushOptions, store content.Store, parent *ocispec.Descripto
 	}
 
 	for _, f := range files {
-		if strings.Contains(f.MediaType, "manifest") {
+		// Skip the parent, this will be pushed last
+		if f.Digest == parent.Digest {
 			continue
 		}
 
@@ -349,12 +348,12 @@ func build_match_filter(matchInclude []string, matchExclude []string) func(a art
 	}
 }
 
-func copy_source(source pullOptions, destref string, recursiveOptions *copyRecursiveOptions) (ocispec.Descriptor, []ocispec.Descriptor, error) {
+func copy_source(source pullOptions, destref string, ingester orascontent.ProvideIngester, recursiveOptions *copyRecursiveOptions) (ocispec.Descriptor, []ocispec.Descriptor, error) {
 	if source.output == "" {
 		source.output = ".working"
 	}
 
-	desc, pulled, err := copy_pull(source, recursiveOptions.store)
+	desc, pulled, err := copy_fetch(source, ingester)
 	if err != nil {
 		return ocispec.Descriptor{}, nil, err
 	}
@@ -397,7 +396,7 @@ func copy_source(source pullOptions, destref string, recursiveOptions *copyRecur
 				destRef := fmt.Sprintf("%s/%s@%s", host, destnamespace, a.Digest)
 
 				before := len(recursiveOptions.additionalFiles)
-				p, blobs, err := copy_source(opts, destRef, recursiveOptions)
+				p, blobs, err := copy_source(opts, destRef, ingester, recursiveOptions)
 				if err != nil {
 					return ocispec.Descriptor{}, nil, err
 				}
@@ -451,7 +450,7 @@ func copy_source(source pullOptions, destref string, recursiveOptions *copyRecur
 	return desc, pulled, nil
 }
 
-func copy_pull(opts pullOptions, store orascontent.ProvideIngester) (ocispec.Descriptor, []ocispec.Descriptor, error) {
+func copy_fetch(opts pullOptions, store orascontent.ProvideIngester) (ocispec.Descriptor, []ocispec.Descriptor, error) {
 	ctx := context.Background()
 	if opts.debug {
 		logrus.SetLevel(logrus.DebugLevel)
@@ -475,7 +474,10 @@ func copy_pull(opts pullOptions, store orascontent.ProvideIngester) (ocispec.Des
 	pullOpts := []oras.PullOpt{
 		oras.WithAllowedMediaTypes(opts.allowedMediaTypes),
 		oras.WithPullStatusTrack(os.Stdout),
-		oras.WithContentProvideIngester(store),
+	}
+
+	if store != nil {
+		pullOpts = append(pullOpts, oras.WithContentProvideIngester(store))
 	}
 
 	if opts.allowEmptyName {
