@@ -163,6 +163,7 @@ func runCopy(opts copyOptions) error {
 		return err
 	}
 
+	// Phase one - push as digest first
 	parentPush := pushOptions{
 		targetRef: fmt.Sprintf("%s/%s@%s", host, namespace, desc.Digest),
 		verbose:   opts.to.verbose,
@@ -197,12 +198,15 @@ func runCopy(opts copyOptions) error {
 				return err
 			}
 		}
+	}
 
-		err = copy_dest(opts.to, cached, &desc, pulled...)
-		if err != nil {
-			return err
-		}
+	// Phase 2 -- push with tag
+	err = copy_dest(opts.to, cached, &desc, pulled...)
+	if err != nil {
+		return err
+	}
 
+	if opts.rescursive {
 		for _, r := range recursiveOptions.additionalFiles {
 			p := pushOptions{
 				targetRef:    fmt.Sprintf("%s/%s", host, namespace),
