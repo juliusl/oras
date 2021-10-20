@@ -158,13 +158,47 @@ func runCopy(opts copyOptions) error {
 		return err
 	}
 
-	err = copy_dest(opts.to, cached, &desc, pulled...)
+	_, host, namespace, _, err := parse(opts.to.targetRef)
+	if err != nil {
+		return err
+	}
+
+	parentPush := pushOptions{
+		targetRef: fmt.Sprintf("%s/%s@%s", host, namespace, desc.Digest),
+		verbose:   opts.to.verbose,
+		debug:     opts.to.debug,
+		configs:   opts.to.configs,
+		username:  opts.to.username,
+		password:  opts.to.password,
+		insecure:  opts.to.insecure,
+		plainHTTP: opts.to.plainHTTP,
+	}
+
+	err = copy_dest(parentPush, cached, &desc, pulled...)
 	if err != nil {
 		return err
 	}
 
 	if opts.rescursive {
-		_, host, namespace, _, err := parse(opts.to.targetRef)
+		for _, r := range recursiveOptions.additionalFiles {
+			p := pushOptions{
+				targetRef:    fmt.Sprintf("%s/%s@%s", host, namespace, r.digest),
+				artifactType: r.artifactType,
+				artifactRefs: r.subject,
+			}
+
+			err = copy_dest(p, cached, r.manifest, ocispec.Descriptor{
+				Size:        r.size,
+				Digest:      r.digest,
+				MediaType:   r.mediaType,
+				Annotations: r.annotations,
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		err = copy_dest(opts.to, cached, &desc, pulled...)
 		if err != nil {
 			return err
 		}
