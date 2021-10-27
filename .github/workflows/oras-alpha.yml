@@ -30,6 +30,7 @@ jobs:
       with:
           distribution: goreleaser
           version: latest
-          args: release --rm-dist
+          args: release --rm-dist --config .prerelease.goleaser.yml
+          prelease: true
       env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
