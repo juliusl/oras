@@ -5,11 +5,11 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/errdefs"
+	"github.com/containerd/containerd/reference"
 	"github.com/containerd/containerd/remotes"
 	"github.com/containerd/containerd/remotes/docker"
 	remoteserrors "github.com/containerd/containerd/remotes/errors"
@@ -27,6 +27,15 @@ func (d *dockerDiscoverer) Pusher(ctx context.Context, ref string) (remotes.Push
 func (d *dockerDiscoverer) Push(ctx context.Context, desc ocispec.Descriptor) (content.Writer, error) {
 	switch desc.MediaType {
 	case artifactspec.MediaTypeArtifactManifest:
+		r, err := reference.Parse(d.reference)
+		if err != nil {
+			return nil, err
+		}
+		ctx, err := docker.ContextWithRepositoryScope(ctx, r, true)
+		if err != nil {
+			return nil, err
+		}
+
 		h, err := d.filterHosts(docker.HostCapabilityPush)
 		if err != nil {
 			return nil, err
@@ -250,17 +259,4 @@ func (pw *artifactsManifest) Commit(ctx context.Context, size int64, expected di
 func (pw *artifactsManifest) Truncate(size int64) error {
 
 	return errors.New("cannot truncate remote upload")
-}
-
-func requestWithMountFrom(req *request, mount, from string) *request {
-	creq := *req
-
-	sep := "?"
-	if strings.Contains(creq.path, sep) {
-		sep = "&"
-	}
-
-	creq.path = creq.path + sep + "mount=" + mount + "&from=" + from
-
-	return &creq
 }
