@@ -31,12 +31,12 @@ import (
 	"github.com/containerd/containerd/reference"
 	"github.com/containerd/containerd/remotes"
 	"github.com/containerd/containerd/remotes/docker"
+	orasdocker "github.com/deislabs/oras/pkg/auth/docker"
 	"github.com/docker/docker/errdefs"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	artifactspec "github.com/oras-project/artifacts-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/context/ctxhttp"
 )
 
 // ErrorCodeMetadataUnknown is returned when requested metadata does not exist
@@ -47,8 +47,22 @@ var ErrorCodeMetadataUnknown = docker.Register("errcode", docker.ErrorDescriptor
 	HTTPStatusCode: http.StatusNotFound,
 })
 
-func WithDiscover(ref string, resolver remotes.Resolver, opts *docker.ResolverOptions) (remotes.Resolver, error) {
-	opts = NewOpts(opts)
+func WithDiscover(ref string, resolver remotes.Resolver) (remotes.Resolver, error) {
+	options := &docker.ResolverOptions{}
+
+	client, err := orasdocker.NewClient()
+	if err != nil {
+		return nil, err
+	}
+
+	c, ok := client.(interface {
+		Credential(hostname string) (string, string, error)
+	})
+
+	if ok {
+		options.Credentials = c.Credential
+	}
+	opts := NewOpts(options)
 
 	r, err := reference.Parse(ref)
 	if err != nil {
@@ -268,9 +282,8 @@ func (r *request) do(ctx context.Context) (*http.Response, error) {
 			req.ContentLength = r.size
 		}
 	}
-
-	ctx = log.WithLogger(ctx, log.G(ctx).WithField("url", u))
-	log.G(ctx).WithFields(requestFields(req)).Debug("do request")
+	// ctx = log.WithLogger(ctx, log.G(ctx).WithField("url", u))
+	// log.G(ctx).WithFields(requestFields(req)).Debug("do request")
 	if err := r.authorize(ctx, req); err != nil {
 		return nil, errors.Wrap(err, "failed to authorize")
 	}
@@ -279,6 +292,7 @@ func (r *request) do(ctx context.Context) (*http.Response, error) {
 	if r.host.Client != nil {
 		*client = *r.host.Client
 	}
+
 	if client.CheckRedirect == nil {
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -288,7 +302,9 @@ func (r *request) do(ctx context.Context) (*http.Response, error) {
 		}
 	}
 
-	resp, err := ctxhttp.Do(ctx, client, req)
+	req = req.WithContext(ctx)
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to do request")
 	}

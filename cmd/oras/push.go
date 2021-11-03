@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/containerd/containerd/remotes"
-	"github.com/containerd/containerd/remotes/docker"
 	iresolver "github.com/deislabs/oras/internal/resolver"
 	"github.com/deislabs/oras/pkg/content"
 	ctxo "github.com/deislabs/oras/pkg/context"
@@ -106,14 +105,13 @@ func runPush(opts *pushOptions) error {
 	// specify resolver
 	var (
 		resolver remotes.Resolver
-		ropts    *docker.ResolverOptions
 		err      error
 	)
 	if opts.dryRun {
 		resolver = iresolver.Dummy()
 		fmt.Println("Entered dry-run mode")
 	} else {
-		resolver, ropts = newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
+		resolver = newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
 	}
 
 	// load files
@@ -125,7 +123,7 @@ func runPush(opts *pushOptions) error {
 	// bake artifact
 	var pushOpts []oras.PushOpt
 	if opts.artifactType != "" {
-		resolver, err = orasDocker.WithDiscover(opts.artifactRefs, resolver, orasDocker.NewOpts(ropts))
+		resolver, err = orasDocker.WithDiscover(opts.artifactRefs, resolver)
 		if err != nil {
 			return err
 		}

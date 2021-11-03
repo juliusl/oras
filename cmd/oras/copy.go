@@ -183,7 +183,7 @@ func runCopy(opts copyOptions) error {
 	if opts.rescursive {
 		for _, r := range recursiveOptions.additionalFiles {
 			p := pushOptions{
-				targetRef:    fmt.Sprintf("%s/%s@%s", host, namespace, r.digest),
+				targetRef:    fmt.Sprintf("%s/%s@%s", host, namespace, r.manifest.Digest),
 				artifactType: r.artifactType,
 				artifactRefs: r.subject,
 			}
@@ -245,8 +245,8 @@ func copy_dest(opts pushOptions, store content.Store, parent *ocispec.Descriptor
 		ctx = ctxo.WithLoggerDiscarded(ctx)
 	}
 
-	resolver, ropts := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
-	resolver, err := orasdocker.WithDiscover(opts.targetRef, resolver, orasdocker.NewOpts(ropts))
+	resolver := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
+	resolver, err := orasdocker.WithDiscover(opts.targetRef, resolver)
 	if err != nil {
 		return err
 	}
@@ -348,12 +348,12 @@ func copy_source(opts pullOptions, destref string, ingester orascontent.ProvideI
 					allowEmptyName:     true,
 				}
 
-				_, _, destnamespace, _, err := parse(destref)
+				_, desthost, destnamespace, _, err := parse(destref)
 				if err != nil {
 					return ocispec.Descriptor{}, nil, err
 				}
 
-				destRef := fmt.Sprintf("%s/%s@%s", host, destnamespace, a.Digest)
+				destRef := fmt.Sprintf("%s/%s@%s", desthost, destnamespace, a.Digest)
 
 				// In the next call to copy_source, I might end up adding additional files from my children
 				// In that case, I will need to ensure those additional files get added after the files that will be added here
@@ -435,9 +435,8 @@ func copy_fetch(opts pullOptions, store orascontent.ProvideIngester) (ocispec.De
 		opts.allowedMediaTypes = []string{orascontent.DefaultBlobMediaType, orascontent.DefaultBlobDirMediaType}
 	}
 
-	resolver, ropts := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
-
-	resolver, err := orasdocker.WithDiscover(opts.targetRef, resolver, ropts)
+	resolver := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
+	resolver, err := orasdocker.WithDiscover(opts.targetRef, resolver)
 	if err != nil {
 		return ocispec.Descriptor{}, nil, err
 	}

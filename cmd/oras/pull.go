@@ -100,9 +100,9 @@ func runPull(opts pullOptions) error {
 		opts.allowedMediaTypes = []string{content.DefaultBlobMediaType, content.DefaultBlobDirMediaType}
 	}
 
-	resolver, ropts := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
+	resolver := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
 
-	resolver, err := docker.WithDiscover(opts.targetRef, resolver, ropts)
+	resolver, err := docker.WithDiscover(opts.targetRef, resolver)
 	if err != nil {
 		return err
 	}

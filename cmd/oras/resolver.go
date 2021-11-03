@@ -17,7 +17,7 @@ import (
 	"github.com/containerd/containerd/remotes/docker"
 )
 
-func newResolver(username, password string, insecure bool, plainHTTP bool, configs ...string) (remotes.Resolver, *docker.ResolverOptions) {
+func newResolver(username, password string, insecure bool, plainHTTP bool, configs ...string) remotes.Resolver {
 	header := http.Header{}
 	header.Set("Accept", strings.Join([]string{
 		images.MediaTypeDockerSchema2Manifest,
@@ -46,7 +46,7 @@ func newResolver(username, password string, insecure bool, plainHTTP bool, confi
 		opts.Credentials = func(hostName string) (string, string, error) {
 			return username, password, nil
 		}
-		return docker.NewResolver(*opts), opts
+		return docker.NewResolver(*opts)
 	}
 	cli, err := auth.NewClient(configs...)
 	if err != nil {
@@ -57,5 +57,5 @@ func newResolver(username, password string, insecure bool, plainHTTP bool, confi
 		fmt.Fprintf(os.Stderr, "WARNING: Error loading resolver: %v\n", err)
 		resolver = docker.NewResolver(*opts)
 	}
-	return resolver, opts
+	return resolver
 }

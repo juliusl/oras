@@ -76,9 +76,9 @@ func runDiscover(opts *discoverOptions) error {
 		ctx = ctxo.WithLoggerDiscarded(ctx)
 	}
 
-	resolver, dopts := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
+	resolver := newResolver(opts.username, opts.password, opts.insecure, opts.plainHTTP, opts.configs...)
 
-	discoverer, err := orasdocker.WithDiscover(opts.targetRef, resolver, dopts)
+	discoverer, err := orasdocker.WithDiscover(opts.targetRef, resolver)
 	if err != nil {
 		return err
 	}
